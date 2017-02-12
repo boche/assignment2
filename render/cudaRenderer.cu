@@ -1,4 +1,4 @@
-#define LBLK 32
+#define LBLK 16 
 #define SCAN_BLOCK_DIM   (LBLK * LBLK)  // needed by sharedMemExclusiveScan implementation
 #include <string>
 #include <algorithm>
@@ -469,7 +469,8 @@ __global__ void kernelRenderPixels() {
 		float rad = cuConstRendererParams.radius[idx_circle];
 
 		if (idx_circle < cuConstRendererParams.numCircles) {
-			is_in_box[threadIndex] = circleInBoxConservative(p.x, p.y, rad, fboxL, fboxR, fboxT, fboxB);
+			/*is_in_box[threadIndex] = circleInBoxConservative(p.x, p.y, rad, fboxL, fboxR, fboxT, fboxB);*/
+			is_in_box[threadIndex] = circleInBox(p.x, p.y, rad, fboxL, fboxR, fboxT, fboxB);
 		} else {
 			is_in_box[threadIndex] = 0;
 		}
@@ -716,12 +717,8 @@ CudaRenderer::render() {
  *    kernelRenderCircles<<<gridDim, blockDim>>>();
  *    cudaDeviceSynchronize();
  */
-	printf("image height: %d, width: %d\n", image->height, image->width);
 	dim3 blockDim(LBLK, LBLK);
 	dim3 gridDim((image->width + blockDim.x - 1) / blockDim.x,
 		(image->height + blockDim.y - 1) / blockDim.y);
-	/*double start = CycleTimer::currentSeconds();*/
 	kernelRenderPixels<<<gridDim, blockDim>>>();
-	/*double end = CycleTimer::currentSeconds();*/
-	/*printf("kernel time: %.3f seconds\n", end - start);*/
 }
