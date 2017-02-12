@@ -452,10 +452,6 @@ __global__ void kernelRenderPixels() {
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
 	int threadIndex = threadIdx.y * blockDim.y + threadIdx.x;
-	/*
-	 *if (x >= imageWidth || y >= imageHeight)
-	 *    return;
-	 */
 
 	float invWidth = 1.f / imageWidth;
 	float invHeight = 1.f / imageHeight;
@@ -473,8 +469,6 @@ __global__ void kernelRenderPixels() {
 		float rad = cuConstRendererParams.radius[idx_circle];
 
 		if (idx_circle < cuConstRendererParams.numCircles) {
-			/*is_in_box[threadIndex] = circleInBox(p.x, p.y, rad, boxL, boxR, boxT, boxB);*/
-			/*is_in_box[threadIndex] = circleInBoxConservative(p.x, p.y, rad, boxL, boxR, boxT, boxB);*/
 			is_in_box[threadIndex] = circleInBoxConservative(p.x, p.y, rad, fboxL, fboxR, fboxT, fboxB);
 		} else {
 			is_in_box[threadIndex] = 0;
