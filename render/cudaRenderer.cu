@@ -1,3 +1,5 @@
+#define LBLK 32
+#define SCAN_BLOCK_DIM   (LBLK * LBLK)  // needed by sharedMemExclusiveScan implementation
 #include <string>
 #include <algorithm>
 #include <math.h>
@@ -14,6 +16,8 @@
 #include "noise.h"
 #include "sceneLoader.h"
 #include "util.h"
+#include "circleBoxTest.cu_inl"
+#include "exclusiveScan.cu_inl"
 
 ////////////////////////////////////////////////////////////////////////////////////////
 // Putting all the cuda kernels here
@@ -49,7 +53,6 @@ __constant__ float  cuConstNoise1DValueTable[256];
 
 // color ramp table needed for the color ramp lookup shader
 #define COLOR_MAP_SIZE 5
-#define LBLK 32
 __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 
 
@@ -431,31 +434,76 @@ __global__ void kernelRenderPixels() {
 	int imageWidth = cuConstRendererParams.imageWidth;
 	int imageHeight = cuConstRendererParams.imageHeight;
 
-	/*
-	 *int boxL = blockIdx.x * blockDim.x;
-	 *int boxR = min(boxL + blockDim.x, imageWidth) - 1;
-	 *int boxT = blockIdx.y * blockDim.y;
-	 *int boxB = min(boxT + blockDim.y, imageHeight) - 1;
-	 */
+	int boxL = blockIdx.x * blockDim.x;
+	int boxR = min(boxL + blockDim.x, imageWidth);
+	int boxB = blockIdx.y * blockDim.y;
+	int boxT = min(boxB + blockDim.y, imageHeight);
+	float fboxL = boxL / float(imageWidth);
+	float fboxR = boxR / float(imageWidth);
+	float fboxB = boxB / float(imageHeight);
+	float fboxT = boxT / float(imageHeight);
+
+	__shared__ uint is_in_box[SCAN_BLOCK_DIM];
+	__shared__ uint prefix_sum[SCAN_BLOCK_DIM];
+	__shared__ uint prefix_scratch[2 * SCAN_BLOCK_DIM];
+	__shared__ uint work_queue[SCAN_BLOCK_DIM];
+	__shared__ int nwork;
 
 	int x = blockIdx.x * blockDim.x + threadIdx.x;
 	int y = blockIdx.y * blockDim.y + threadIdx.y;
-	if (x >= imageWidth || y >= imageHeight)
-		return;
+	int threadIndex = threadIdx.y * blockDim.y + threadIdx.x;
+	/*
+	 *if (x >= imageWidth || y >= imageHeight)
+	 *    return;
+	 */
 
 	float invWidth = 1.f / imageWidth;
 	float invHeight = 1.f / imageHeight;
 	float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(x) + 0.5f),
 										 invHeight * (static_cast<float>(y) + 0.5f));
+	/*float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)]);*/
 	float4 imgPtr = *((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)]));
 
-	for (int idx_circle = 0; idx_circle < cuConstRendererParams.numCircles; idx_circle++) {
+	for (int idx = 0; idx < cuConstRendererParams.numCircles; idx += SCAN_BLOCK_DIM) {
+		// update is_in_box
+		nwork = 0;
+		int idx_circle = idx + threadIndex;
 		int index3 = 3 * idx_circle;
 		float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
-		shadePixel(idx_circle, pixelCenterNorm, p, &imgPtr);
+		float rad = cuConstRendererParams.radius[idx_circle];
+
+		if (idx_circle < cuConstRendererParams.numCircles) {
+			/*is_in_box[threadIndex] = circleInBox(p.x, p.y, rad, boxL, boxR, boxT, boxB);*/
+			/*is_in_box[threadIndex] = circleInBoxConservative(p.x, p.y, rad, boxL, boxR, boxT, boxB);*/
+			is_in_box[threadIndex] = circleInBoxConservative(p.x, p.y, rad, fboxL, fboxR, fboxT, fboxB);
+		} else {
+			is_in_box[threadIndex] = 0;
+		}
+		__syncthreads();
+
+		sharedMemExclusiveScan(threadIndex, is_in_box, prefix_sum, prefix_scratch, SCAN_BLOCK_DIM);
+		__syncthreads();
+
+		if (threadIndex + 1 < SCAN_BLOCK_DIM && prefix_sum[threadIndex] + 1 == prefix_sum[threadIndex+1]) {
+			work_queue[prefix_sum[threadIndex]] = idx_circle; 
+		} else if (threadIndex == SCAN_BLOCK_DIM - 1) {
+			nwork = prefix_sum[threadIndex];
+			if (is_in_box[threadIndex] == 1) {
+				work_queue[nwork] = idx_circle;
+				nwork++;
+			}
+		}
+		__syncthreads();
+
+		for (int j = 0; j < nwork; j++) {
+			idx_circle = work_queue[j];
+			index3 = 3 * idx_circle;
+			p = *(float3*)(&cuConstRendererParams.position[index3]);
+			/*shadePixel(idx_circle, pixelCenterNorm, p, imgPtr);*/
+			shadePixel(idx_circle, pixelCenterNorm, p, &imgPtr);
+		}
 	}
 	*((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)])) = imgPtr;
-
 }
 ////////////////////////////////////////////////////////////////////////////////////////
 
@@ -675,8 +723,7 @@ CudaRenderer::render() {
  *    cudaDeviceSynchronize();
  */
 	printf("image height: %d, width: %d\n", image->height, image->width);
-	dim3 blockDim(32, 32);
-	/*dim3 blockDim(16, 16);*/
+	dim3 blockDim(LBLK, LBLK);
 	dim3 gridDim((image->width + blockDim.x - 1) / blockDim.x,
 		(image->height + blockDim.y - 1) / blockDim.y);
 	/*double start = CycleTimer::currentSeconds();*/
