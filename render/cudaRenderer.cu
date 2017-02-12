@@ -8,6 +8,7 @@
 #include <cuda_runtime.h>
 #include <driver_functions.h>
 
+#include "cycleTimer.h"
 #include "cudaRenderer.h"
 #include "image.h"
 #include "noise.h"
@@ -48,6 +49,7 @@ __constant__ float  cuConstNoise1DValueTable[256];
 
 // color ramp table needed for the color ramp lookup shader
 #define COLOR_MAP_SIZE 5
+#define LBLK 32
 __constant__ float  cuConstColorRamp[COLOR_MAP_SIZE][3];
 
 
@@ -425,6 +427,36 @@ __global__ void kernelRenderCircles() {
     }
 }
 
+__global__ void kernelRenderPixels() {
+	int imageWidth = cuConstRendererParams.imageWidth;
+	int imageHeight = cuConstRendererParams.imageHeight;
+
+	/*
+	 *int boxL = blockIdx.x * blockDim.x;
+	 *int boxR = min(boxL + blockDim.x, imageWidth) - 1;
+	 *int boxT = blockIdx.y * blockDim.y;
+	 *int boxB = min(boxT + blockDim.y, imageHeight) - 1;
+	 */
+
+	int x = blockIdx.x * blockDim.x + threadIdx.x;
+	int y = blockIdx.y * blockDim.y + threadIdx.y;
+	if (x >= imageWidth || y >= imageHeight)
+		return;
+
+	float invWidth = 1.f / imageWidth;
+	float invHeight = 1.f / imageHeight;
+	float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(x) + 0.5f),
+										 invHeight * (static_cast<float>(y) + 0.5f));
+	float4 imgPtr = *((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)]));
+
+	for (int idx_circle = 0; idx_circle < cuConstRendererParams.numCircles; idx_circle++) {
+		int index3 = 3 * idx_circle;
+		float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+		shadePixel(idx_circle, pixelCenterNorm, p, &imgPtr);
+	}
+	*((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)])) = imgPtr;
+
+}
 ////////////////////////////////////////////////////////////////////////////////////////
 
 
@@ -634,10 +666,21 @@ CudaRenderer::advanceAnimation() {
 void
 CudaRenderer::render() {
 
-    // 256 threads per block is a healthy number
-    dim3 blockDim(256, 1);
-    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
-
-    kernelRenderCircles<<<gridDim, blockDim>>>();
-    cudaDeviceSynchronize();
+/*
+ *    // 256 threads per block is a healthy number
+ *    dim3 blockDim(256, 1);
+ *    dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
+ *
+ *    kernelRenderCircles<<<gridDim, blockDim>>>();
+ *    cudaDeviceSynchronize();
+ */
+	printf("image height: %d, width: %d\n", image->height, image->width);
+	dim3 blockDim(32, 32);
+	/*dim3 blockDim(16, 16);*/
+	dim3 gridDim((image->width + blockDim.x - 1) / blockDim.x,
+		(image->height + blockDim.y - 1) / blockDim.y);
+	/*double start = CycleTimer::currentSeconds();*/
+	kernelRenderPixels<<<gridDim, blockDim>>>();
+	/*double end = CycleTimer::currentSeconds();*/
+	/*printf("kernel time: %.3f seconds\n", end - start);*/
 }
