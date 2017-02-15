@@ -457,12 +457,14 @@ __global__ void kernelRenderPixels() {
 	float invHeight = 1.f / imageHeight;
 	float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(x) + 0.5f),
 										 invHeight * (static_cast<float>(y) + 0.5f));
-	/*float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)]);*/
-	float4 imgPtr = *((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)]));
+	bool is_valid = (x < imageWidth && y < imageHeight);
+	float4 imgPtr;
+	if (is_valid) {
+		imgPtr = *((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)]));
+	}
 
 	for (int idx = 0; idx < cuConstRendererParams.numCircles; idx += SCAN_BLOCK_DIM) {
 		// update is_in_box
-		nwork = 0;
 		int idx_circle = idx + threadIndex;
 		int index3 = 3 * idx_circle;
 		float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
@@ -494,11 +496,12 @@ __global__ void kernelRenderPixels() {
 			idx_circle = work_queue[j];
 			index3 = 3 * idx_circle;
 			p = *(float3*)(&cuConstRendererParams.position[index3]);
-			/*shadePixel(idx_circle, pixelCenterNorm, p, imgPtr);*/
 			shadePixel(idx_circle, pixelCenterNorm, p, &imgPtr);
 		}
 	}
-	*((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)])) = imgPtr;
+	if (is_valid) { 
+		*((float4*)(&cuConstRendererParams.imageData[4 * (y * imageWidth + x)])) = imgPtr;
+	}
 }
 ////////////////////////////////////////////////////////////////////////////////////////
 
